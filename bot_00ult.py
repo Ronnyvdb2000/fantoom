@@ -21,19 +21,15 @@ TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
 # ---------------------------------------------------------------------------
-# MRA PARAMETERS — geen filters, puur BB + IBS (origineel bewezen €945.000)
+# MRA PARAMETERS
 # ---------------------------------------------------------------------------
-MRA_BB_STD      = 2.2   # Bollinger Band breedte
-MRA_IBS_MAX     = 0.30  # IBS (sluit in onderste 30% van dagrange)
-
-# MRA SNEL uitstap — origineel
-MRA_SNEL_WINST  = 1.12  # +12% winstlimiet
-MRA_SNEL_MA     = 5     # verkoop boven MA5
-
-# MRA TRAAG uitstap — minimum houdperiode, dan MA10 of +25%
-MRA_TRAAG_WINST = 1.25  # +25% winstlimiet
-MRA_TRAAG_MA    = 10    # verkoop boven MA10
-MRA_TRAAG_HOLD  = 5     # minimum 5 dagen vasthouden
+MRA_BB_STD      = 2.2
+MRA_IBS_MAX     = 0.30
+MRA_SNEL_WINST  = 1.12
+MRA_SNEL_MA     = 5
+MRA_TRAAG_WINST = 1.25
+MRA_TRAAG_MA    = 10
+MRA_TRAAG_HOLD  = 5
 
 def stuur_telegram(bericht: str) -> bool:
     if not TOKEN or not CHAT_ID: return False
@@ -48,7 +44,6 @@ def stuur_telegram(bericht: str) -> bool:
 
 # ---------------------------------------------------------------------------
 # INDICATOREN
-# FIX: ma20_line alias verwijderd — ma20 wordt lokaal berekend in MRA sectie
 # ---------------------------------------------------------------------------
 def bereken_indicatoren_vectorized(df: pd.DataFrame, s: int, t: int, use_trend_filter: bool, is_hyper: bool) -> tuple:
     p = df['Close'].ffill()
@@ -58,24 +53,20 @@ def bereken_indicatoren_vectorized(df: pd.DataFrame, s: int, t: int, use_trend_f
 
     f_line = p.rolling(window=s).mean() if s >= 20 else p.ewm(span=s, adjust=False).mean()
     s_line = p.rolling(window=t).mean() if t >= 50 else p.ewm(span=t, adjust=False).mean()
-    ema100 = p.ewm(span=100, adjust=False).mean()
+    ema200 = p.ewm(span=200, adjust=False).mean()  # gewijzigd van ema100 naar ema200
     vol_ma = v.rolling(window=20).mean()
 
-    # RSI met correcte Wilder smoothing (EWM)
     delta = p.diff()
     gain = delta.where(delta > 0, 0.0).ewm(alpha=1/14, adjust=False).mean()
     loss = (-delta.where(delta < 0, 0.0)).ewm(alpha=1/14, adjust=False).mean()
     rsi_val = 100 - (100 / (1 + gain / (loss + 1e-10)))
 
-    # Bollinger Band & IBS voor MRA
-    ma20  = p.rolling(20).mean()
-    std20 = p.rolling(20).std()
+    ma20     = p.rolling(20).mean()
+    std20    = p.rolling(20).std()
     lower_bb = ma20 - (MRA_BB_STD * std20)
-    ibs   = (p - l) / (h - l + 1e-10)
-    ma5   = p.rolling(5).mean()
-    # FIX: ma20_line alias verwijderd — was identiek aan ma20, overbodig
+    ibs      = (p - l) / (h - l + 1e-10)
+    ma5      = p.rolling(5).mean()
 
-    # CRSI voor Hyper strategieën
     if is_hyper:
         change = np.sign(delta).fillna(0)
         streak = change.groupby((change != change.shift()).cumsum()).cumsum()
@@ -89,7 +80,6 @@ def bereken_indicatoren_vectorized(df: pd.DataFrame, s: int, t: int, use_trend_f
         p_rank = delta.rolling(100).apply(lambda x: (x[:-1] < x[-1]).sum() / 99.0 * 100 if len(x) > 0 else 50, raw=True)
         rsi_val = (rsi3 + streak_rsi + p_rank) / 3
 
-    # ATR & ADX met correcte Wilder smoothing
     tr = pd.concat([h - l, (h - p.shift()).abs(), (l - p.shift()).abs()], axis=1).max(axis=1)
     atr = tr.ewm(alpha=1/14, adjust=False).mean()
     up   = h.diff().clip(lower=0)
@@ -98,8 +88,7 @@ def bereken_indicatoren_vectorized(df: pd.DataFrame, s: int, t: int, use_trend_f
     minus_di = 100 * (down.where((down > up) & (down > 0), 0.0).ewm(alpha=1/14, adjust=False).mean() / (atr + 1e-10))
     adx = (100 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-10)).ewm(alpha=1/14, adjust=False).mean()
 
-    # FIX: 12 return waarden ipv 13 (ma20_line verwijderd)
-    return p, f_line, s_line, ema100, vol_ma, rsi_val, atr, adx, v, ibs, lower_bb, ma5
+    return p, f_line, s_line, ema200, vol_ma, rsi_val, atr, adx, v, ibs, lower_bb, ma5
 
 # ---------------------------------------------------------------------------
 # CORE ENGINE
@@ -144,13 +133,10 @@ def voer_lijst_uit(bestandsnaam: str, label: str, naam_sector: str) -> None:
 
             if len(t_data) < 250: continue
 
-            # Bereken basis indicatoren voor MRA (FIX: 12 return waarden)
-            p, f, sl, e100, v_ma, rsi, atr, adx, vol, ibs, l_bb, ma5 = bereken_indicatoren_vectorized(t_data, 50, 200, True, False)
+            p, f, sl, e200, v_ma, rsi, atr, adx, vol, ibs, l_bb, ma5 = bereken_indicatoren_vectorized(t_data, 50, 200, True, False)
             kosten = 15.0 + (inzet * 0.0035)
 
-            # --- STRATEGIEËN T / S / HT / HS (ongewijzigd) ---
             for skey, s_p, t_p, utr, ihyp in STRATS:
-                # FIX: 12 return waarden unpacking
                 pi, fi, sli, ei, vmai, rsii, atri, dxi, voli, _, _, _ = bereken_indicatoren_vectorized(t_data, s_p, t_p, utr, ihyp)
 
                 pb  = pi.iloc[200:];  fb  = fi.iloc[200:];  sb  = sli.iloc[200:]
@@ -177,7 +163,6 @@ def voer_lijst_uit(bestandsnaam: str, label: str, naam_sector: str) -> None:
                     pr += (inzet * (pb.iloc[-1] / ins) - inzet) - kosten
                 res[skey] += pr
 
-                # Signalen
                 cp    = pi.iloc[-1]
                 catr  = atri.iloc[-1]
                 crsi  = rsii.iloc[-1]
@@ -192,10 +177,7 @@ def voer_lijst_uit(bestandsnaam: str, label: str, naam_sector: str) -> None:
                 elif fi.iloc[-1] < sli.iloc[-1] and fi.iloc[-2] >= sli.iloc[-2]:
                     sig[skey].append(f"• `{ticker}`: 🔴 *VERKOOP* | €{cp:.2f} | ⚡ ATR: {catr:.2f} | {l_rsi}: {crsi:.1f} | 🛡️ SL: €{cp-(2*catr):.2f} | {y_l}")
 
-            # ---------------------------------------------------------------
-            # MRA SNEL — origineel: BB + IBS, geen filters, uitstap MA5 of +12%
-            # FIX backtest venster: iloc[-252:] + reset_index voor NaN-veiligheid
-            # ---------------------------------------------------------------
+            # MRA SNEL
             pb_mra  = p.iloc[-252:].reset_index(drop=True)
             lbb_mra = l_bb.iloc[-252:].reset_index(drop=True)
             ibs_mra = ibs.iloc[-252:].reset_index(drop=True)
@@ -208,7 +190,6 @@ def voer_lijst_uit(bestandsnaam: str, label: str, naam_sector: str) -> None:
                 ibs_i = ibs_mra.iloc[i]
                 if pd.isna(cp) or pd.isna(lbb_i) or pd.isna(ibs_i): continue
                 if not pos_ms:
-                    # FIX: enkel BB + IBS, geen extra filters
                     if cp < lbb_i and ibs_i < MRA_IBS_MAX:
                         ins_ms, pos_ms = cp, True
                         pr_ms -= kosten
@@ -223,11 +204,7 @@ def voer_lijst_uit(bestandsnaam: str, label: str, naam_sector: str) -> None:
                 pr_ms += (inzet * (pb_mra.iloc[-1] / ins_ms) - inzet) - kosten
             res["MRAS"] += pr_ms
 
-            # ---------------------------------------------------------------
-            # MRA TRAAG — BB + IBS instap, min 5 dagen, uitstap MA10 of +25%
-            # FIX backtest venster: iloc[-252:] + reset_index voor NaN-veiligheid
-            # FIX uitstap: MA10 ipv MA20 (MA20 werkt niet voor miners)
-            # ---------------------------------------------------------------
+            # MRA TRAAG
             ma10_mra = p.rolling(MRA_TRAAG_MA).mean().iloc[-252:].reset_index(drop=True)
 
             pr_mt, pos_mt, ins_mt, hold_mt = 0.0, False, 0.0, 0
@@ -253,9 +230,7 @@ def voer_lijst_uit(bestandsnaam: str, label: str, naam_sector: str) -> None:
                 pr_mt += (inzet * (pb_mra.iloc[-1] / ins_mt) - inzet) - kosten
             res["MRAT"] += pr_mt
 
-            # ---------------------------------------------------------------
-            # ACTUELE MRA SIGNALEN — enkel BB + IBS, geen filters
-            # ---------------------------------------------------------------
+            # ACTUELE MRA SIGNALEN
             cp_now  = p.iloc[-1]
             lbb_now = l_bb.iloc[-1]
             ibs_now = ibs.iloc[-1]
@@ -270,12 +245,11 @@ def voer_lijst_uit(bestandsnaam: str, label: str, naam_sector: str) -> None:
             continue
 
     # ---------------------------------------------------------------------------
-    # RAPPORT — gesplitst in 2 berichten (Telegram max 4096 tekens)
+    # RAPPORT
     # ---------------------------------------------------------------------------
     def fmt(n): return f"€{100000 + n:,.0f}"
     def get_s(lst): return "\n".join(lst) if lst else "Geen actie"
 
-    # Deel 1: resultaten + trend signalen
     deel1 = [
         f"📊 *{label} {naam_sector} RAPPORT ult*",
         f"_{nu}_",
@@ -294,7 +268,6 @@ def voer_lijst_uit(bestandsnaam: str, label: str, naam_sector: str) -> None:
         get_s(sig["S"]),
     ]
 
-    # Deel 2: hyper + MRA signalen + parameters
     deel2 = [
         f"📊 *{label} {naam_sector} (2/2)*",
         "",
@@ -311,7 +284,7 @@ def voer_lijst_uit(bestandsnaam: str, label: str, naam_sector: str) -> None:
         get_s(sig["MRAT"]),
         "",
         "⚙️ *PARAMETERS:*",
-        f"_Trend: ADX>15 | Vol>0.6x MA20 | EMA100 filter | Trailing stop 2x ATR_",
+        f"_Trend: ADX>15 | Vol>0.6x MA20 | EMA200 filter | Trailing stop 2x ATR_",
         f"_MRA instap: BB {MRA_BB_STD}σ | IBS<{MRA_IBS_MAX} (geen extra filters)_",
         f"_MRA Snel: uitstap MA{MRA_SNEL_MA} of +{int((MRA_SNEL_WINST-1)*100)}%_",
         f"_MRA Traag: min {MRA_TRAAG_HOLD}d, uitstap MA{MRA_TRAAG_MA} of +{int((MRA_TRAAG_WINST-1)*100)}%_",
