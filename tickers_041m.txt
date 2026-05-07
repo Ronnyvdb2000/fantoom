@@ -1,5 +1,5 @@
 # MASTERLIJST — Benelux | bron: tickers_041a.txt
-# Laatste update: 04/05/2026
+# Laatste update: 07/05/2026
 # Criteria (soepel): ROE>10% | Debt<100 | Marge>7% | Vol 18%-65%
 # Status: actief | zwakker (max 2 weken) | verwijderd
 # ----------------------------------------------------------------------
@@ -7,7 +7,7 @@ ACKB.BR          | opname:2026-05-04 | ROE:11% | Debt:30.5 | Marge:10% | Vol:20%
 ADYEN.AS         | opname:2026-05-03 | ROE:22% | Debt:4.8 | Marge:45% | Vol:40% | actief
 AGN.AS           | opname:2026-05-03 | ROE:10% | Debt:56.9 | Marge:8% | Vol:25% | actief
 ARGX.BR          | opname:2026-05-04 | ROE:20% | Debt:64.4 | Marge:30% | Vol:33% | actief
-ASML.AS          | opname:2026-05-03 | ROE:52% | Debt:13.0 | Marge:30% | Vol:38% | actief
+ASML.AS          | opname:2026-05-03 | ROE:52% | Debt:13.0 | Marge:30% | Vol:39% | actief
 CVC.AS           | opname:2026-05-03 | ROE:60% | Debt:79.3 | Marge:64% | Vol:34% | actief
 DEME.BR          | opname:2026-05-04 | ROE:15% | Debt:51.1 | Marge:8% | Vol:30% | actief
 EVS.BR           | opname:2026-05-04 | ROE:17% | Debt:6.2 | Marge:19% | Vol:24% | actief
@@ -19,7 +19,7 @@ JEN.BR           | opname:2026-05-04 | ROE:20% | Debt:22.2 | Marge:11% | Vol:28%
 LOTB.BR          | opname:2026-05-04 | ROE:21% | Debt:36.3 | Marge:13% | Vol:26% | actief
 MELE.BR          | opname:2026-05-04 | ROE:21% | Debt:50.4 | Marge:13% | Vol:36% | actief
 NEDAP.AS         | opname:2026-05-03 | ROE:28% | Debt:4.9 | Marge:9% | Vol:25% | actief
-NRP.AS           | opname:2026-05-03 | ROE:10% | Debt:62.0 | Marge:54% | Vol:29% | actief
+NRP.AS           | opname:2026-05-03 | ROE:10% | Debt:62.0 | Marge:54% | Vol:28% | actief
 PRX.AS           | opname:2026-05-03 | ROE:26% | Debt:32.1 | Marge:196% | Vol:29% | actief
 QRF.BR           | opname:2026-05-04 | ROE:13% | Debt:77.0 | Marge:127% | Vol:20% | actief
 SHUR.BR          | opname:2026-05-04 | ROE:14% | Debt:37.6 | Marge:133% | Vol:24% | actief
