@@ -59,7 +59,7 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DIAGNOSE_LIJST: "043"
-        run: python bot_041m_diagnose.py
+        run: python bot_041mV2.py
 
       - name: Pauze na 043
         if: ${{ github.event.inputs.lijsten == 'alle' }}
@@ -71,7 +71,7 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DIAGNOSE_LIJST: "044"
-        run: python bot_041m_diagnose.py
+        run: python bot_041mV2.py
 
       - name: Pauze na 044
         if: ${{ github.event.inputs.lijsten == 'alle' }}
@@ -83,7 +83,7 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DIAGNOSE_LIJST: "045"
-        run: python bot_041m_diagnose.py
+        run: python bot_041mV2.py
 
       - name: Pauze na 045
         if: ${{ github.event.inputs.lijsten == 'alle' }}
@@ -107,7 +107,7 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DIAGNOSE_LIJST: "047"
-        run: python bot_041m_diagnose.py
+        run: python bot_041mV2.py
 
       - name: Pauze na 047
         if: ${{ github.event.inputs.lijsten == 'alle' }}
@@ -119,7 +119,7 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DIAGNOSE_LIJST: "048"
-        run: python bot_041m_diagnose.py
+        run: python bot_041mV2.py
 
       # â”€â”€ Resultaten committen â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       - name: Commit diagnoseresultaten
