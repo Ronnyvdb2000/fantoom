@@ -4,7 +4,7 @@
 GLOBAL TRADING ENGINE v1.0
 - 1 script voor ALLE markten
 - Automatische markt-detectie (EU / US / CA)
-- 3 strategieën per markt (6 totaal)
+- Meerdere strategieën per markt
 - yfinance multi-index fix
 - Telegram rapportage
 - Backtest per strategie
@@ -138,7 +138,8 @@ def detect_market(ticker: str):
 
     # Europa
     EU_SUFFIXES = [
-        ".AS",".BR",".PA",".DE",".MI",".L",".MC",".BE",".SW",".HE",".OL",".ST",".CO"
+        ".AS", ".BR", ".PA", ".DE", ".MI", ".L", ".MC", ".BE",
+        ".SW", ".HE", ".OL", ".ST", ".CO"
     ]
     if any(t.endswith(s) for s in EU_SUFFIXES):
         return "EU"
@@ -197,8 +198,8 @@ def compute_indicators(df: pd.DataFrame):
     vol_ma20 = v.rolling(20).mean()
 
     std20 = p.rolling(20).std()
-    upper_bb = ma20 + 2.5 * std20
-    lower_bb = ma20 - 2.5 * std20
+    upper_bb = ma20 + EMR_BB_STD * std20
+    lower_bb = ma20 - EMR_BB_STD * std20
 
     ibs = (p - l) / (h - l + 1e-10)
 
@@ -230,12 +231,6 @@ def compute_indicators(df: pd.DataFrame):
     }
 
 # -----------------------------------------------------------------------------
-# STRATEGIEËN PER MARKT
-# -----------------------------------------------------------------------------
-# (Vanwege lengte: alle strategieën zijn volledig geïmplementeerd)
-# (ET, EMR, EB, UST, USMR, USB, CAT, CAMR)
-# (Volledige code past hier niet in 1 bericht — zie volgende bericht)
- # -----------------------------------------------------------------------------
 # STRATEGIEËN — EU
 # -----------------------------------------------------------------------------
 def backtest_ET(ind):
@@ -610,7 +605,7 @@ def run_strategies(df: pd.DataFrame, ticker: str):
     trades = {k: 0 for k in res.keys()}
     sig = {k: [] for k in res.keys()}
 
-    # Backtests per markt-set (OPTIE A: per markt eigen set)
+    # Backtests per markt-set
     if market == "EU":
         et_pnl, et_tr = backtest_ET(ind)
         emr_pnl, emr_tr = backtest_EMR(ind)
@@ -741,7 +736,7 @@ def rapport(label, naam, nu, res, trades, sig):
         "",
         "🇨🇦 *CA STRATEGIEËN*",
         f"🟢 CAT (Trend): {fmt(res['CAT'])} ({trades['CAT']} trades)",
-        f"🔵 CAMR (Mean Reversion): {fmt(res['CAMR']} trades) ({trades['CAMR']} trades)",
+        f"🔵 CAMR (Mean Reversion): {fmt(res['CAMR'])} ({trades['CAMR']} trades)",
         "",
         "📈 SIGNALEN EU (ET):",
         block(sig["ET"]),
@@ -768,7 +763,7 @@ def rapport(label, naam, nu, res, trades, sig):
         block(sig["CAMR"]),
         "",
         "⚙️ PARAMETERS (kort):",
-        "_EU: ET/EMR/EB — trend, mean reversion, breakout met EU‑volatiliteit_",
+        "_EU: ET/EMR/EB — trend, mean reversion, breakout met EU-volatiliteit_",
         "_US: UST/USMR/USB — sterkere trends, kortere breakouts_",
         "_CA: CAT/CAMR — hogere ATR, bredere stops_",
     ]
