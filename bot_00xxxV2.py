@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-GLOBAL TRADING ENGINE v1.0
-- 1 script voor ALLE markten
-- Automatische markt-detectie (EU / US / CA)
-- Meerdere strategieën per markt
-- yfinance multi-index fix
-- Telegram rapportage
-- Backtest per strategie
+GLOBAL SIGNAL ENGINE v2.0
+- 1 script
+- Oude strategie-namen: Traag / Snel / Hyper Trend / Hyper Scalp / MRA Snel / MRA Traag
+- Slimme routering per markt:
+    * EU: alleen MRA Snel + MRA Traag
+    * US: alle strategieën
+    * CA: Traag + Hyper Trend + MRA Snel + MRA Traag
+- yfinance-fix
+- Telegram-rapportage
 """
 
 import os
@@ -62,69 +64,44 @@ def telegram_send(msg: str):
 INZET = 2500.0
 KOSTEN = 15.0 + (INZET * 0.0035)
 
-# -------------------------
-# EU STRATEGIEËN
-# -------------------------
-# ET (EU Trend)
-ET_ADX_MIN = 12
-ET_RSI_MIN = 45
-ET_RSI_MAX = 65
-ET_VOL_MIN = 0.2
-ET_SL_ATR = 2.5
-ET_TP_ATR = 2.0
+# Traag (50/200)
+T_ADX_MIN = 15
+T_RSI_MIN = 45
+T_RSI_MAX = 65
+T_SL_ATR = 2.5
+T_TP_ATR = 3.0
 
-# EMR (EU Mean Reversion)
-EMR_BB_STD = 2.5
-EMR_IBS_MAX = 0.40
-EMR_RSI_MAX = 35
-EMR_SL_ATR = 3.0
-EMR_TP_PCT = 0.06
-EMR_MA_EXIT = 10
+# Snel (20/50)
+S_ADX_MIN = 18
+S_RSI_MIN = 50
+S_RSI_MAX = 70
+S_SL_ATR = 2.0
+S_TP_ATR = 3.0
 
-# EB (EU Breakout)
-EB_LOOKBACK = 50
-EB_ADX_MIN = 15
-EB_RSI_MAX = 70
-EB_VOL_SPIKE = 1.5
-EB_SL_ATR = 2.0
-EB_TP_ATR = 3.0
+# Hyper Trend
+HT_ADX_MIN = 20
+HT_RSI_MIN = 55
+HT_RSI_MAX = 75
+HT_SL_ATR = 2.0
+HT_TP_ATR = 4.0
 
-# -------------------------
-# US STRATEGIEËN
-# -------------------------
-# UST (US Trend Momentum)
-UST_ADX_MIN = 18
-UST_RSI_MIN = 50
-UST_RSI_MAX = 70
-UST_SL_ATR = 2.0
-UST_TP_ATR = 3.0
+# Hyper Scalp
+HS_IBS_MAX = 0.35
+HS_RSI_MAX = 35
+HS_SL_ATR = 2.0
+HS_TP_ATR = 1.5
 
-# USMR (US Mean Reversion)
-USMR_IBS_MAX = 0.35
-USMR_RSI_MAX = 30
-USMR_SL_ATR = 2.5
-USMR_TP_ATR = 2.0
+# MRA Snel
+MRAS_IBS_MAX = 0.40
+MRAS_RSI_MAX = 35
+MRAS_SL_ATR = 3.0
+MRAS_TP_PCT = 0.06
 
-# USB (US Breakout)
-USB_LOOKBACK = 20
-USB_VOL_SPIKE = 1.8
-USB_ADX_MIN = 20
-USB_SL_ATR = 2.0
-USB_TP_ATR = 4.0
-
-# -------------------------
-# CA STRATEGIEËN
-# -------------------------
-# CAT (CA Trend)
-CAT_ADX_MIN = 14
-CAT_SL_ATR = 3.0
-CAT_TP_ATR = 2.5
-
-# CAMR (CA Mean Reversion)
-CAMR_IBS_MAX = 0.45
-CAMR_RSI_MAX = 40
-CAMR_SL_ATR = 3.5
-CAMR_TP_ATR = 2.0
+# MRA Traag
+MRAT_IBS_MAX = 0.45
+MRAT_RSI_MAX = 40
+MRAT_SL_ATR = 3.5
+MRAT_TP_PCT = 0.08
 
 # -----------------------------------------------------------------------------
 # MARKT-DETECTIE
@@ -148,7 +125,7 @@ def detect_market(ticker: str):
     return "US"
 
 # -----------------------------------------------------------------------------
-# DOWNLOAD ENGINE + MULTI-INDEX FIX
+# DOWNLOAD ENGINE
 # -----------------------------------------------------------------------------
 def download_ticker(ticker: str):
     try:
@@ -161,11 +138,9 @@ def download_ticker(ticker: str):
         if df is None or len(df) < 260:
             return None
 
-        # Multi-index flatten
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [c[0] for c in df.columns]
 
-        # Forceer kolommen naar Series
         for col in ["Close", "High", "Low", "Open", "Volume"]:
             if col in df.columns and isinstance(df[col], pd.DataFrame):
                 df[col] = df[col].iloc[:, 0]
@@ -198,8 +173,7 @@ def compute_indicators(df: pd.DataFrame):
     vol_ma20 = v.rolling(20).mean()
 
     std20 = p.rolling(20).std()
-    upper_bb = ma20 + EMR_BB_STD * std20
-    lower_bb = ma20 - EMR_BB_STD * std20
+    lower_bb = ma20 - 2.5 * std20
 
     ibs = (p - l) / (h - l + 1e-10)
 
@@ -226,190 +200,27 @@ def compute_indicators(df: pd.DataFrame):
         "p": p, "h": h, "l": l, "v": v,
         "ema20": ema20, "ema50": ema50, "ema200": ema200,
         "ma10": ma10, "ma20": ma20, "vol_ma20": vol_ma20,
-        "upper_bb": upper_bb, "lower_bb": lower_bb,
+        "lower_bb": lower_bb,
         "ibs": ibs, "rsi": rsi, "atr": atr, "adx": adx
     }
 
 # -----------------------------------------------------------------------------
-# STRATEGIEËN — EU
+# STRATEGIEËN
 # -----------------------------------------------------------------------------
-def backtest_ET(ind):
-    """EU Trend: pullback naar EMA20 binnen uptrend."""
-    p = ind["p"]
-    ema20 = ind["ema20"]
-    ema50 = ind["ema50"]
-    ema200 = ind["ema200"]
-    rsi = ind["rsi"]
-    atr = ind["atr"]
-    adx = ind["adx"]
-    vol = ind["v"]
-    vol_ma20 = ind["vol_ma20"]
+def bt_Traag(ind):
+    p = ind["p"]; ema50 = ind["ema50"]; ema200 = ind["ema200"]
+    rsi = ind["rsi"]; atr = ind["atr"]; adx = ind["adx"]
 
-    pr = 0.0
-    trades = 0
-    pos = False
-    ins = 0.0
-
-    for i in range(50, len(p)):
-        cp = p.iloc[i]
-
-        if not pos:
-            if (
-                ema50.iloc[i] > ema200.iloc[i] and
-                ET_RSI_MIN <= rsi.iloc[i] <= ET_RSI_MAX and
-                adx.iloc[i] > ET_ADX_MIN and
-                vol.iloc[i] > vol_ma20.iloc[i] * ET_VOL_MIN and
-                cp <= ema20.iloc[i] * 1.01 and
-                cp >= ema20.iloc[i] * 0.97
-            ):
-                pos = True
-                ins = cp
-                pr -= KOSTEN
-                trades += 1
-        else:
-            sl = ins - ET_SL_ATR * atr.iloc[i]
-            tp = ins + ET_TP_ATR * atr.iloc[i]
-
-            if cp <= sl or cp >= tp:
-                pr += (INZET * (cp / ins) - INZET) - KOSTEN
-                pos = False
-
-    if pos:
-        cp = p.iloc[-1]
-        pr += (INZET * (cp / ins) - INZET) - KOSTEN
-
-    return pr, trades
-
-
-def backtest_EMR(ind):
-    """EU Mean Reversion: BB + IBS + RSI."""
-    p = ind["p"]
-    lower_bb = ind["lower_bb"]
-    ibs = ind["ibs"]
-    rsi = ind["rsi"]
-    atr = ind["atr"]
-    ma10 = ind["ma10"]
-
-    pr = 0.0
-    trades = 0
-    pos = False
-    ins = 0.0
-
-    pb = p.iloc[-252:]
-    lbb = lower_bb.iloc[-252:]
-    ibs_s = ibs.iloc[-252:]
-    rsi_s = rsi.iloc[-252:]
-    atr_s = atr.iloc[-252:]
-    ma10_s = ma10.iloc[-252:]
-
-    for i in range(20, len(pb)):
-        cp = pb.iloc[i]
-
-        if not pos:
-            if (
-                cp < lbb.iloc[i] and
-                ibs_s.iloc[i] < EMR_IBS_MAX and
-                rsi_s.iloc[i] < EMR_RSI_MAX
-            ):
-                pos = True
-                ins = cp
-                pr -= KOSTEN
-                trades += 1
-        else:
-            tp = ins * (1 + EMR_TP_PCT)
-            sl = ins - EMR_SL_ATR * atr_s.iloc[i]
-
-            if cp >= tp or cp <= sl or cp >= ma10_s.iloc[i]:
-                pr += (INZET * (cp / ins) - INZET) - KOSTEN
-                pos = False
-
-    if pos:
-        cp = pb.iloc[-1]
-        pr += (INZET * (cp / ins) - INZET) - KOSTEN
-
-    return pr, trades
-
-
-def backtest_EB(ind):
-    """EU Breakout: high + volume spike + ADX."""
-    p = ind["p"]
-    h = ind["h"]
-    rsi = ind["rsi"]
-    atr = ind["atr"]
-    adx = ind["adx"]
-    vol = ind["v"]
-    vol_ma20 = ind["vol_ma20"]
-
-    pr = 0.0
-    trades = 0
-    pos = False
-    ins = 0.0
-
-    for i in range(EB_LOOKBACK, len(p)):
-        cp = p.iloc[i]
-        hh = h.iloc[i-EB_LOOKBACK:i].max()
-
-        if not pos:
-            if (
-                cp > hh and
-                vol.iloc[i] > vol_ma20.iloc[i] * EB_VOL_SPIKE and
-                adx.iloc[i] > EB_ADX_MIN and
-                rsi.iloc[i] < EB_RSI_MAX
-            ):
-                pos = True
-                ins = cp
-                pr -= KOSTEN
-                trades += 1
-        else:
-            sl = ins - EB_SL_ATR * atr.iloc[i]
-            tp = ins + EB_TP_ATR * atr.iloc[i]
-
-            if cp <= sl or cp >= tp:
-                pr += (INZET * (cp / ins) - INZET) - KOSTEN
-                pos = False
-
-    if pos:
-        cp = p.iloc[-1]
-        pr += (INZET * (cp / ins) - INZET) - KOSTEN
-
-    return pr, trades
-
-# -----------------------------------------------------------------------------
-# STRATEGIEËN — US
-# -----------------------------------------------------------------------------
-def backtest_UST(ind):
-    """US Trend Momentum: sterkere trend, meer momentum."""
-    p = ind["p"]
-    ema20 = ind["ema20"]
-    ema50 = ind["ema50"]
-    ema200 = ind["ema200"]
-    rsi = ind["rsi"]
-    atr = ind["atr"]
-    adx = ind["adx"]
-
-    pr = 0.0
-    trades = 0
-    pos = False
-    ins = 0.0
+    pr = 0.0; trades = 0; pos = False; ins = 0.0
 
     for i in range(60, len(p)):
         cp = p.iloc[i]
-
         if not pos:
-            if (
-                ema50.iloc[i] > ema200.iloc[i] and
-                ema20.iloc[i] > ema50.iloc[i] and
-                UST_RSI_MIN <= rsi.iloc[i] <= UST_RSI_MAX and
-                adx.iloc[i] > UST_ADX_MIN
-            ):
-                pos = True
-                ins = cp
-                pr -= KOSTEN
-                trades += 1
+            if ema50.iloc[i] > ema200.iloc[i] and T_RSI_MIN <= rsi.iloc[i] <= T_RSI_MAX and adx.iloc[i] > T_ADX_MIN:
+                pos = True; ins = cp; pr -= KOSTEN; trades += 1
         else:
-            sl = ins - UST_SL_ATR * atr.iloc[i]
-            tp = ins + UST_TP_ATR * atr.iloc[i]
-
+            sl = ins - T_SL_ATR * atr.iloc[i]
+            tp = ins + T_TP_ATR * atr.iloc[i]
             if cp <= sl or cp >= tp:
                 pr += (INZET * (cp / ins) - INZET) - KOSTEN
                 pos = False
@@ -417,42 +228,71 @@ def backtest_UST(ind):
     if pos:
         cp = p.iloc[-1]
         pr += (INZET * (cp / ins) - INZET) - KOSTEN
-
     return pr, trades
 
 
-def backtest_USMR(ind):
-    """US Mean Reversion: agressiever, kortere swings."""
-    p = ind["p"]
-    ibs = ind["ibs"]
-    rsi = ind["rsi"]
-    atr = ind["atr"]
-    ma10 = ind["ma10"]
+def bt_Snel(ind):
+    p = ind["p"]; ema20 = ind["ema20"]; ema50 = ind["ema50"]; ema200 = ind["ema200"]
+    rsi = ind["rsi"]; atr = ind["atr"]; adx = ind["adx"]
 
-    pr = 0.0
-    trades = 0
-    pos = False
-    ins = 0.0
+    pr = 0.0; trades = 0; pos = False; ins = 0.0
 
-    pb = p.iloc[-252:]
-    ibs_s = ibs.iloc[-252:]
-    rsi_s = rsi.iloc[-252:]
-    atr_s = atr.iloc[-252:]
-    ma10_s = ma10.iloc[-252:]
+    for i in range(60, len(p)):
+        cp = p.iloc[i]
+        if not pos:
+            if ema20.iloc[i] > ema50.iloc[i] > ema200.iloc[i] and S_RSI_MIN <= rsi.iloc[i] <= S_RSI_MAX and adx.iloc[i] > S_ADX_MIN:
+                pos = True; ins = cp; pr -= KOSTEN; trades += 1
+        else:
+            sl = ins - S_SL_ATR * atr.iloc[i]
+            tp = ins + S_TP_ATR * atr.iloc[i]
+            if cp <= sl or cp >= tp:
+                pr += (INZET * (cp / ins) - INZET) - KOSTEN
+                pos = False
+
+    if pos:
+        cp = p.iloc[-1]
+        pr += (INZET * (cp / ins) - INZET) - KOSTEN
+    return pr, trades
+
+
+def bt_HyperTrend(ind):
+    p = ind["p"]; ema20 = ind["ema20"]; ema50 = ind["ema50"]; ema200 = ind["ema200"]
+    rsi = ind["rsi"]; atr = ind["atr"]; adx = ind["adx"]
+
+    pr = 0.0; trades = 0; pos = False; ins = 0.0
+
+    for i in range(80, len(p)):
+        cp = p.iloc[i]
+        if not pos:
+            if ema20.iloc[i] > ema50.iloc[i] > ema200.iloc[i] and HT_RSI_MIN <= rsi.iloc[i] <= HT_RSI_MAX and adx.iloc[i] > HT_ADX_MIN:
+                pos = True; ins = cp; pr -= KOSTEN; trades += 1
+        else:
+            sl = ins - HT_SL_ATR * atr.iloc[i]
+            tp = ins + HT_TP_ATR * atr.iloc[i]
+            if cp <= sl or cp >= tp:
+                pr += (INZET * (cp / ins) - INZET) - KOSTEN
+                pos = False
+
+    if pos:
+        cp = p.iloc[-1]
+        pr += (INZET * (cp / ins) - INZET) - KOSTEN
+    return pr, trades
+
+
+def bt_HyperScalp(ind):
+    p = ind["p"]; ibs = ind["ibs"]; rsi = ind["rsi"]; atr = ind["atr"]; ma10 = ind["ma10"]
+
+    pr = 0.0; trades = 0; pos = False; ins = 0.0
+    pb = p.iloc[-252:]; ibs_s = ibs.iloc[-252:]; rsi_s = rsi.iloc[-252:]; atr_s = atr.iloc[-252:]; ma10_s = ma10.iloc[-252:]
 
     for i in range(20, len(pb)):
         cp = pb.iloc[i]
-
         if not pos:
-            if ibs_s.iloc[i] < USMR_IBS_MAX and rsi_s.iloc[i] < USMR_RSI_MAX:
-                pos = True
-                ins = cp
-                pr -= KOSTEN
-                trades += 1
+            if ibs_s.iloc[i] < HS_IBS_MAX and rsi_s.iloc[i] < HS_RSI_MAX:
+                pos = True; ins = cp; pr -= KOSTEN; trades += 1
         else:
-            sl = ins - USMR_SL_ATR * atr_s.iloc[i]
-            tp = ins + USMR_TP_ATR * atr_s.iloc[i]
-
+            sl = ins - HS_SL_ATR * atr_s.iloc[i]
+            tp = ins + HS_TP_ATR * atr_s.iloc[i]
             if cp <= sl or cp >= tp or cp >= ma10_s.iloc[i]:
                 pr += (INZET * (cp / ins) - INZET) - KOSTEN
                 pos = False
@@ -460,126 +300,23 @@ def backtest_USMR(ind):
     if pos:
         cp = pb.iloc[-1]
         pr += (INZET * (cp / ins) - INZET) - KOSTEN
-
     return pr, trades
 
 
-def backtest_USB(ind):
-    """US Breakout: kortere lookback, sterk volume."""
-    p = ind["p"]
-    h = ind["h"]
-    atr = ind["atr"]
-    adx = ind["adx"]
-    rsi = ind["rsi"]
-    vol = ind["v"]
-    vol_ma20 = ind["vol_ma20"]
+def bt_MRAS(ind):
+    p = ind["p"]; ibs = ind["ibs"]; rsi = ind["rsi"]; atr = ind["atr"]; ma10 = ind["ma10"]
 
-    pr = 0.0
-    trades = 0
-    pos = False
-    ins = 0.0
-
-    for i in range(USB_LOOKBACK, len(p)):
-        cp = p.iloc[i]
-        hh = h.iloc[i-USB_LOOKBACK:i].max()
-
-        if not pos:
-            if (
-                cp > hh and
-                vol.iloc[i] > vol_ma20.iloc[i] * USB_VOL_SPIKE and
-                adx.iloc[i] > USB_ADX_MIN and
-                rsi.iloc[i] < 75
-            ):
-                pos = True
-                ins = cp
-                pr -= KOSTEN
-                trades += 1
-        else:
-            sl = ins - USB_SL_ATR * atr.iloc[i]
-            tp = ins + USB_TP_ATR * atr.iloc[i]
-
-            if cp <= sl or cp >= tp:
-                pr += (INZET * (cp / ins) - INZET) - KOSTEN
-                pos = False
-
-    if pos:
-        cp = p.iloc[-1]
-        pr += (INZET * (cp / ins) - INZET) - KOSTEN
-
-    return pr, trades
-
-# -----------------------------------------------------------------------------
-# STRATEGIEËN — CA
-# -----------------------------------------------------------------------------
-def backtest_CAT(ind):
-    """CA Trend: grondstoffen, hogere ATR, bredere stops."""
-    p = ind["p"]
-    ema50 = ind["ema50"]
-    ema200 = ind["ema200"]
-    atr = ind["atr"]
-    adx = ind["adx"]
-
-    pr = 0.0
-    trades = 0
-    pos = False
-    ins = 0.0
-
-    for i in range(60, len(p)):
-        cp = p.iloc[i]
-
-        if not pos:
-            if ema50.iloc[i] > ema200.iloc[i] and adx.iloc[i] > CAT_ADX_MIN:
-                pos = True
-                ins = cp
-                pr -= KOSTEN
-                trades += 1
-        else:
-            sl = ins - CAT_SL_ATR * atr.iloc[i]
-            tp = ins + CAT_TP_ATR * atr.iloc[i]
-
-            if cp <= sl or cp >= tp:
-                pr += (INZET * (cp / ins) - INZET) - KOSTEN
-                pos = False
-
-    if pos:
-        cp = p.iloc[-1]
-        pr += (INZET * (cp / ins) - INZET) - KOSTEN
-
-    return pr, trades
-
-
-def backtest_CAMR(ind):
-    """CA Mean Reversion: iets ruimer dan EU, hogere ATR."""
-    p = ind["p"]
-    ibs = ind["ibs"]
-    rsi = ind["rsi"]
-    atr = ind["atr"]
-    ma10 = ind["ma10"]
-
-    pr = 0.0
-    trades = 0
-    pos = False
-    ins = 0.0
-
-    pb = p.iloc[-252:]
-    ibs_s = ibs.iloc[-252:]
-    rsi_s = rsi.iloc[-252:]
-    atr_s = atr.iloc[-252:]
-    ma10_s = ma10.iloc[-252:]
+    pr = 0.0; trades = 0; pos = False; ins = 0.0
+    pb = p.iloc[-252:]; ibs_s = ibs.iloc[-252:]; rsi_s = rsi.iloc[-252:]; atr_s = atr.iloc[-252:]; ma10_s = ma10.iloc[-252:]
 
     for i in range(20, len(pb)):
         cp = pb.iloc[i]
-
         if not pos:
-            if ibs_s.iloc[i] < CAMR_IBS_MAX and rsi_s.iloc[i] < CAMR_RSI_MAX:
-                pos = True
-                ins = cp
-                pr -= KOSTEN
-                trades += 1
+            if ibs_s.iloc[i] < MRAS_IBS_MAX and rsi_s.iloc[i] < MRAS_RSI_MAX:
+                pos = True; ins = cp; pr -= KOSTEN; trades += 1
         else:
-            sl = ins - CAMR_SL_ATR * atr_s.iloc[i]
-            tp = ins + CAMR_TP_ATR * atr_s.iloc[i]
-
+            sl = ins - MRAS_SL_ATR * atr_s.iloc[i]
+            tp = ins * (1 + MRAS_TP_PCT)
             if cp <= sl or cp >= tp or cp >= ma10_s.iloc[i]:
                 pr += (INZET * (cp / ins) - INZET) - KOSTEN
                 pos = False
@@ -587,129 +324,104 @@ def backtest_CAMR(ind):
     if pos:
         cp = pb.iloc[-1]
         pr += (INZET * (cp / ins) - INZET) - KOSTEN
+    return pr, trades
 
+
+def bt_MRAT(ind):
+    p = ind["p"]; ibs = ind["ibs"]; rsi = ind["rsi"]; atr = ind["atr"]; ma10 = ind["ma10"]
+
+    pr = 0.0; trades = 0; pos = False; ins = 0.0
+    pb = p.iloc[-252:]; ibs_s = ibs.iloc[-252:]; rsi_s = rsi.iloc[-252:]; atr_s = atr.iloc[-252:]; ma10_s = ma10.iloc[-252:]
+
+    for i in range(20, len(pb)):
+        cp = pb.iloc[i]
+        if not pos:
+            if ibs_s.iloc[i] < MRAT_IBS_MAX and rsi_s.iloc[i] < MRAT_RSI_MAX:
+                pos = True; ins = cp; pr -= KOSTEN; trades += 1
+        else:
+            sl = ins - MRAT_SL_ATR * atr_s.iloc[i]
+            tp = ins * (1 + MRAT_TP_PCT)
+            if cp <= sl or cp >= tp or cp >= ma10_s.iloc[i]:
+                pr += (INZET * (cp / ins) - INZET) - KOSTEN
+                pos = False
+
+    if pos:
+        cp = pb.iloc[-1]
+        pr += (INZET * (cp / ins) - INZET) - KOSTEN
     return pr, trades
 
 # -----------------------------------------------------------------------------
-# RUN STRATEGIES PER TICKER
+# RUN STRATEGIES PER TICKER (MARKT-ROUTING)
 # -----------------------------------------------------------------------------
 def run_strategies(df: pd.DataFrame, ticker: str):
     ind = compute_indicators(df)
     market = detect_market(ticker)
 
-    res = {
-        "ET": 0.0, "EMR": 0.0, "EB": 0.0,
-        "UST": 0.0, "USMR": 0.0, "USB": 0.0,
-        "CAT": 0.0, "CAMR": 0.0
-    }
+    res = {k: 0.0 for k in ["T","S","HT","HS","MRAS","MRAT"]}
     trades = {k: 0 for k in res.keys()}
     sig = {k: [] for k in res.keys()}
 
-    # Backtests per markt-set
+    # EU: alleen MRA Snel + MRA Traag
     if market == "EU":
-        et_pnl, et_tr = backtest_ET(ind)
-        emr_pnl, emr_tr = backtest_EMR(ind)
-        eb_pnl, eb_tr = backtest_EB(ind)
-        res["ET"] += et_pnl; trades["ET"] += et_tr
-        res["EMR"] += emr_pnl; trades["EMR"] += emr_tr
-        res["EB"] += eb_pnl; trades["EB"] += eb_tr
+        mras_p, mras_t = bt_MRAS(ind)
+        mrat_p, mrat_t = bt_MRAT(ind)
+        res["MRAS"] += mras_p; trades["MRAS"] += mras_t
+        res["MRAT"] += mrat_p; trades["MRAT"] += mrat_t
 
+    # US: alle strategieën
     elif market == "US":
-        ust_pnl, ust_tr = backtest_UST(ind)
-        usmr_pnl, usmr_tr = backtest_USMR(ind)
-        usb_pnl, usb_tr = backtest_USB(ind)
-        res["UST"] += ust_pnl; trades["UST"] += ust_tr
-        res["USMR"] += usmr_pnl; trades["USMR"] += usmr_tr
-        res["USB"] += usb_pnl; trades["USB"] += usb_tr
+        t_p, t_t = bt_Traag(ind)
+        s_p, s_t = bt_Snel(ind)
+        ht_p, ht_t = bt_HyperTrend(ind)
+        hs_p, hs_t = bt_HyperScalp(ind)
+        mras_p, mras_t = bt_MRAS(ind)
+        mrat_p, mrat_t = bt_MRAT(ind)
 
+        res["T"] += t_p; trades["T"] += t_t
+        res["S"] += s_p; trades["S"] += s_t
+        res["HT"] += ht_p; trades["HT"] += ht_t
+        res["HS"] += hs_p; trades["HS"] += hs_t
+        res["MRAS"] += mras_p; trades["MRAS"] += mras_t
+        res["MRAT"] += mrat_p; trades["MRAT"] += mrat_t
+
+    # CA: Traag + Hyper Trend + MRA's
     elif market == "CA":
-        cat_pnl, cat_tr = backtest_CAT(ind)
-        camr_pnl, camr_tr = backtest_CAMR(ind)
-        res["CAT"] += cat_pnl; trades["CAT"] += cat_tr
-        res["CAMR"] += camr_pnl; trades["CAMR"] += camr_tr
+        t_p, t_t = bt_Traag(ind)
+        ht_p, ht_t = bt_HyperTrend(ind)
+        mras_p, mras_t = bt_MRAS(ind)
+        mrat_p, mrat_t = bt_MRAT(ind)
 
-    # Signalen (laatste bar)
-    p = ind["p"]
-    ema20 = ind["ema20"]
-    ema50 = ind["ema50"]
-    ema200 = ind["ema200"]
-    rsi = ind["rsi"]
-    atr = ind["atr"]
-    adx = ind["adx"]
-    vol = ind["v"]
-    vol_ma20 = ind["vol_ma20"]
-    lower_bb = ind["lower_bb"]
-    ibs = ind["ibs"]
-    h = ind["h"]
+        res["T"] += t_p; trades["T"] += t_t
+        res["HT"] += ht_p; trades["HT"] += ht_t
+        res["MRAS"] += mras_p; trades["MRAS"] += mras_t
+        res["MRAT"] += mrat_p; trades["MRAT"] += mrat_t
 
-    # EU-signalen
+    # Signalen (simpel, laatste bar)
+    p = ind["p"]; rsi = ind["rsi"]; atr = ind["atr"]; ibs = ind["ibs"]
+
     if market == "EU":
-        if (
-            ema50.iloc[-1] > ema200.iloc[-1] and
-            abs(p.iloc[-1] - ema20.iloc[-1]) / ema20.iloc[-1] < 0.02 and
-            adx.iloc[-1] > ET_ADX_MIN
-        ):
-            sig["ET"].append(
-                f"• `{ticker}`: 🇪🇺 🟢 ET pullback | €{p.iloc[-1]:.2f} | ATR {atr.iloc[-1]:.2f}"
-            )
+        if ibs.iloc[-1] < MRAS_IBS_MAX and rsi.iloc[-1] < MRAS_RSI_MAX:
+            sig["MRAS"].append(f"• `{ticker}`: 🇪🇺 🛡️ MRA Snel | €{p.iloc[-1]:.2f}")
+        if ibs.iloc[-1] < MRAT_IBS_MAX and rsi.iloc[-1] < MRAT_RSI_MAX:
+            sig["MRAT"].append(f"• `{ticker}`: 🇪🇺 🐢 MRA Traag | €{p.iloc[-1]:.2f}")
 
-        if (
-            p.iloc[-1] < lower_bb.iloc[-1] and
-            ibs.iloc[-1] < EMR_IBS_MAX and
-            rsi.iloc[-1] < EMR_RSI_MAX
-        ):
-            sig["EMR"].append(
-                f"• `{ticker}`: 🇪🇺 🔵 EMR mean reversion | €{p.iloc[-1]:.2f}"
-            )
-
-        hh50 = h.iloc[-EB_LOOKBACK:].max()
-        if (
-            p.iloc[-1] > hh50 and
-            vol.iloc[-1] > vol_ma20.iloc[-1] * EB_VOL_SPIKE and
-            adx.iloc[-1] > EB_ADX_MIN
-        ):
-            sig["EB"].append(
-                f"• `{ticker}`: 🇪🇺 🔴 EB breakout | €{p.iloc[-1]:.2f}"
-            )
-
-    # US-signalen
     if market == "US":
-        if (
-            ema50.iloc[-1] > ema200.iloc[-1] and
-            ema20.iloc[-1] > ema50.iloc[-1] and
-            UST_RSI_MIN <= rsi.iloc[-1] <= UST_RSI_MAX and
-            adx.iloc[-1] > UST_ADX_MIN
-        ):
-            sig["UST"].append(
-                f"• `{ticker}`: 🇺🇸 🟢 UST trend | €{p.iloc[-1]:.2f}"
-            )
+        sig["T"].append(f"• `{ticker}`: 🇺🇸 🐢 Traag | €{p.iloc[-1]:.2f} | ATR {atr.iloc[-1]:.2f}")
+        sig["S"].append(f"• `{ticker}`: 🇺🇸 ⚡ Snel | €{p.iloc[-1]:.2f}")
+        sig["HT"].append(f"• `{ticker}`: 🇺🇸 🚀 Hyper Trend | €{p.iloc[-1]:.2f}")
+        sig["HS"].append(f"• `{ticker}`: 🇺🇸 🔥 Hyper Scalp | €{p.iloc[-1]:.2f}")
+        if ibs.iloc[-1] < MRAS_IBS_MAX and rsi.iloc[-1] < MRAS_RSI_MAX:
+            sig["MRAS"].append(f"• `{ticker}`: 🇺🇸 🛡️ MRA Snel | €{p.iloc[-1]:.2f}")
+        if ibs.iloc[-1] < MRAT_IBS_MAX and rsi.iloc[-1] < MRAT_RSI_MAX:
+            sig["MRAT"].append(f"• `{ticker}`: 🇺🇸 🐢 MRA Traag | €{p.iloc[-1]:.2f}")
 
-        if ibs.iloc[-1] < USMR_IBS_MAX and rsi.iloc[-1] < USMR_RSI_MAX:
-            sig["USMR"].append(
-                f"• `{ticker}`: 🇺🇸 🔵 USMR mean reversion | €{p.iloc[-1]:.2f}"
-            )
-
-        hh20 = h.iloc[-USB_LOOKBACK:].max()
-        if (
-            p.iloc[-1] > hh20 and
-            vol.iloc[-1] > vol_ma20.iloc[-1] * USB_VOL_SPIKE and
-            adx.iloc[-1] > USB_ADX_MIN
-        ):
-            sig["USB"].append(
-                f"• `{ticker}`: 🇺🇸 🔴 USB breakout | €{p.iloc[-1]:.2f}"
-            )
-
-    # CA-signalen
     if market == "CA":
-        if ema50.iloc[-1] > ema200.iloc[-1] and adx.iloc[-1] > CAT_ADX_MIN:
-            sig["CAT"].append(
-                f"• `{ticker}`: 🇨🇦 🟢 CAT trend | €{p.iloc[-1]:.2f}"
-            )
-
-        if ibs.iloc[-1] < CAMR_IBS_MAX and rsi.iloc[-1] < CAMR_RSI_MAX:
-            sig["CAMR"].append(
-                f"• `{ticker}`: 🇨🇦 🔵 CAMR mean reversion | €{p.iloc[-1]:.2f}"
-            )
+        sig["T"].append(f"• `{ticker}`: 🇨🇦 🐢 Traag | €{p.iloc[-1]:.2f}")
+        sig["HT"].append(f"• `{ticker}`: 🇨🇦 🚀 Hyper Trend | €{p.iloc[-1]:.2f}")
+        if ibs.iloc[-1] < MRAS_IBS_MAX and rsi.iloc[-1] < MRAS_RSI_MAX:
+            sig["MRAS"].append(f"• `{ticker}`: 🇨🇦 🛡️ MRA Snel | €{p.iloc[-1]:.2f}")
+        if ibs.iloc[-1] < MRAT_IBS_MAX and rsi.iloc[-1] < MRAT_RSI_MAX:
+            sig["MRAT"].append(f"• `{ticker}`: 🇨🇦 🐢 MRA Traag | €{p.iloc[-1]:.2f}")
 
     return res, trades, sig
 
@@ -721,51 +433,33 @@ def rapport(label, naam, nu, res, trades, sig):
     def block(lst): return "\n".join(lst) if lst else "Geen signalen"
 
     lijnen = [
-        f"📊 *{label} {naam} — GLOBAL ENGINE*",
-        f"_{nu}_",
+        f"📊 {label} {naam} — GLOBAL v2.0",
+        f"{nu}",
         "----------------------------------",
-        "🇪🇺 *EU STRATEGIEËN*",
-        f"🟢 ET (Trend): {fmt(res['ET'])} ({trades['ET']} trades)",
-        f"🔵 EMR (Mean Reversion): {fmt(res['EMR'])} ({trades['EMR']} trades)",
-        f"🔴 EB (Breakout): {fmt(res['EB'])} ({trades['EB']} trades)",
+        f"🐢 Traag (50/200): {fmt(res['T'])} ({trades['T']} trades)",
+        f"⚡ Snel (20/50): {fmt(res['S'])} ({trades['S']} trades)",
+        f"🚀 Hyper Trend: {fmt(res['HT'])} ({trades['HT']} trades)",
+        f"🔥 Hyper Scalp: {fmt(res['HS'])} ({trades['HS']} trades)",
+        f"🛡️ MRA Snel: {fmt(res['MRAS'])} ({trades['MRAS']} trades)",
+        f"🐢 MRA Traag: {fmt(res['MRAT'])} ({trades['MRAT']} trades)",
         "",
-        "🇺🇸 *US STRATEGIEËN*",
-        f"🟢 UST (Trend): {fmt(res['UST'])} ({trades['UST']} trades)",
-        f"🔵 USMR (Mean Reversion): {fmt(res['USMR'])} ({trades['USMR']} trades)",
-        f"🔴 USB (Breakout): {fmt(res['USB'])} ({trades['USB']} trades)",
+        "🛡️ SIGNALEN MRA Snel:",
+        block(sig["MRAS"]),
         "",
-        "🇨🇦 *CA STRATEGIEËN*",
-        f"🟢 CAT (Trend): {fmt(res['CAT'])} ({trades['CAT']} trades)",
-        f"🔵 CAMR (Mean Reversion): {fmt(res['CAMR'])} ({trades['CAMR']} trades)",
+        "🐢 SIGNALEN MRA Traag:",
+        block(sig["MRAT"]),
         "",
-        "📈 SIGNALEN EU (ET):",
-        block(sig["ET"]),
+        "🐢 SIGNALEN Traag:",
+        block(sig["T"]),
         "",
-        "📈 SIGNALEN EU (EMR):",
-        block(sig["EMR"]),
+        "⚡ SIGNALEN Snel:",
+        block(sig["S"]),
         "",
-        "📈 SIGNALEN EU (EB):",
-        block(sig["EB"]),
+        "🚀 SIGNALEN Hyper Trend:",
+        block(sig["HT"]),
         "",
-        "📈 SIGNALEN US (UST):",
-        block(sig["UST"]),
-        "",
-        "📈 SIGNALEN US (USMR):",
-        block(sig["USMR"]),
-        "",
-        "📈 SIGNALEN US (USB):",
-        block(sig["USB"]),
-        "",
-        "📈 SIGNALEN CA (CAT):",
-        block(sig["CAT"]),
-        "",
-        "📈 SIGNALEN CA (CAMR):",
-        block(sig["CAMR"]),
-        "",
-        "⚙️ PARAMETERS (kort):",
-        "_EU: ET/EMR/EB — trend, mean reversion, breakout met EU-volatiliteit_",
-        "_US: UST/USMR/USB — sterkere trends, kortere breakouts_",
-        "_CA: CAT/CAMR — hogere ATR, bredere stops_",
+        "🔥 SIGNALEN Hyper Scalp:",
+        block(sig["HS"]),
     ]
 
     telegram_send("\n".join(lijnen))
@@ -815,11 +509,7 @@ def main():
         logger.info(f"Start analyse {nr} ({naam}) met {len(tickers)} tickers.")
         nu = datetime.now().strftime("%d/%m/%Y %H:%M")
 
-        res = {
-            "ET": 0.0, "EMR": 0.0, "EB": 0.0,
-            "UST": 0.0, "USMR": 0.0, "USB": 0.0,
-            "CAT": 0.0, "CAMR": 0.0
-        }
+        res = {k: 0.0 for k in ["T","S","HT","HS","MRAS","MRAT"]}
         trades = {k: 0 for k in res.keys()}
         sig = {k: [] for k in res.keys()}
 
@@ -829,7 +519,6 @@ def main():
                 continue
 
             r, tr, sg = run_strategies(df, t)
-
             for k in res.keys():
                 res[k] += r[k]
                 trades[k] += tr[k]
