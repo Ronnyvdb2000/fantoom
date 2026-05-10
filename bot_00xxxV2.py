@@ -1,257 +1,352 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-GLOBAL SIGNAL ENGINE v2.0 — FIXED
-- Automatische detectie van tickerbestanden (041–060)
-- Compatibel met GitHub Actions
-- Telegram-rapportage
-- MRA + Trendstrategieën
-"""
+from __future__ import annotations
 
+import yfinance as yf
+import pandas as pd
 import os
-import time
-import logging
 import requests
 import numpy as np
-import pandas as pd
-import yfinance as yf
-from datetime import datetime
 from dotenv import load_dotenv
+from datetime import datetime
+import logging
+import time
 
-# -------------------------------------------------------------------------
-# LOGGING
-# -------------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
-)
+# ---------------------------------------------------------------------------
+# CONFIG & LOGGING
+# ---------------------------------------------------------------------------
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger(__name__)
 
-# -------------------------------------------------------------------------
-# TELEGRAM
-# -------------------------------------------------------------------------
 load_dotenv()
-TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TOKEN = os.getenv('TELEGRAM_TOKEN')
+CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
-def telegram_send(msg: str):
+# ---------------------------------------------------------------------------
+# MRA PARAMETERS
+# ---------------------------------------------------------------------------
+MRA_BB_STD      = 2.2
+MRA_IBS_MAX     = 0.30
+MRA_SNEL_WINST  = 1.12
+MRA_SNEL_MA     = 5
+MRA_TRAAG_WINST = 1.25
+MRA_TRAAG_MA    = 10
+MRA_TRAAG_HOLD  = 5
+
+def stuur_telegram(bericht: str) -> bool:
     if not TOKEN or not CHAT_ID:
-        return
-    chunks = [msg[i:i+3500] for i in range(0, len(msg), 3500)]
-    for c in chunks:
-        try:
-            requests.post(
-                f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-                data={
-                    "chat_id": CHAT_ID,
-                    "text": c,
-                    "parse_mode": "Markdown",
-                    "disable_web_page_preview": True
-                },
-                timeout=20
-            )
-            time.sleep(1)
-        except Exception as e:
-            logger.error(f"Telegram fout: {e}")
-
-# -------------------------------------------------------------------------
-# PARAMETERS
-# -------------------------------------------------------------------------
-INZET = 2500.0
-KOSTEN = 15.0 + (INZET * 0.0035)
-
-# Traag (50/200)
-T_ADX_MIN = 15
-T_RSI_MIN = 45
-T_RSI_MAX = 65
-T_SL_ATR = 2.5
-T_TP_ATR = 3.0
-
-# Snel (20/50)
-S_ADX_MIN = 18
-S_RSI_MIN = 50
-S_RSI_MAX = 70
-S_SL_ATR = 2.0
-S_TP_ATR = 3.0
-
-# Hyper Trend
-HT_ADX_MIN = 20
-HT_RSI_MIN = 55
-HT_RSI_MAX = 75
-HT_SL_ATR = 2.0
-HT_TP_ATR = 4.0
-
-# Hyper Scalp
-HS_IBS_MAX = 0.35
-HS_RSI_MAX = 35
-HS_SL_ATR = 2.0
-HS_TP_ATR = 1.5
-
-# MRA Snel
-MRAS_IBS_MAX = 0.40
-MRAS_RSI_MAX = 35
-MRAS_SL_ATR = 3.0
-MRAS_TP_PCT = 0.06
-
-# MRA Traag
-MRAT_IBS_MAX = 0.45
-MRAT_RSI_MAX = 40
-MRAT_SL_ATR = 3.5
-MRAT_TP_PCT = 0.08
-
-# -------------------------------------------------------------------------
-# MARKT-DETECTIE
-# -------------------------------------------------------------------------
-def detect_market(ticker: str):
-    t = ticker.upper()
-
-    if t.endswith(".TO") or t.endswith(".V"):
-        return "CA"
-
-    EU_SUFFIXES = [
-        ".AS", ".BR", ".PA", ".DE", ".MI", ".L", ".MC", ".BE",
-        ".SW", ".HE", ".OL", ".ST", ".CO"
-    ]
-    if any(t.endswith(s) for s in EU_SUFFIXES):
-        return "EU"
-
-    return "US"
-
-# -------------------------------------------------------------------------
-# DOWNLOAD ENGINE
-# -------------------------------------------------------------------------
-def download_ticker(ticker: str):
+        return False
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     try:
-        df = yf.download(
-            ticker,
-            period="5y",
-            auto_adjust=False,
-            progress=False
+        r = requests.post(
+            url,
+            data={
+                "chat_id": CHAT_ID,
+                "text": bericht,
+                "parse_mode": "Markdown",
+                "disable_web_page_preview": True
+            },
+            timeout=30
         )
-        if df is None or len(df) < 260:
-            return None
-
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = [c[0] for c in df.columns]
-
-        for col in ["Close", "High", "Low", "Open", "Volume"]:
-            if col in df.columns and isinstance(df[col], pd.DataFrame):
-                df[col] = df[col].iloc[:, 0]
-
-        df = df.dropna()
-        if len(df) < 260:
-            return None
-
-        return df
-
+        r.raise_for_status()
+        return True
     except Exception as e:
-        logger.error(f"Download fout {ticker}: {e}")
-        return None
+        logger.error(f"Telegram fout: {e}")
+        return False
 
-# -------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # INDICATOREN
-# -------------------------------------------------------------------------
-def compute_indicators(df: pd.DataFrame):
-    p = df["Close"].ffill()
-    h = df["High"].ffill()
-    l = df["Low"].ffill()
-    v = df["Volume"].ffill()
+# ---------------------------------------------------------------------------
+def bereken_indicatoren_vectorized(df: pd.DataFrame, s: int, t: int, use_trend_filter: bool, is_hyper: bool) -> tuple:
+    p = df['Close'].ffill()
+    h = df['High'].ffill()
+    l = df['Low'].ffill()
+    v = df['Volume'].ffill()
 
-    ema20  = p.ewm(span=20, adjust=False).mean()
-    ema50  = p.ewm(span=50, adjust=False).mean()
+    f_line = p.rolling(window=s).mean() if s >= 20 else p.ewm(span=s, adjust=False).mean()
+    s_line = p.rolling(window=t).mean() if t >= 50 else p.ewm(span=t, adjust=False).mean()
     ema200 = p.ewm(span=200, adjust=False).mean()
-
-    ma10 = p.rolling(10).mean()
-    ma20 = p.rolling(20).mean()
-    vol_ma20 = v.rolling(20).mean()
-
-    std20 = p.rolling(20).std()
-    lower_bb = ma20 - 2.5 * std20
-
-    ibs = (p - l) / (h - l + 1e-10)
+    vol_ma = v.rolling(window=20).mean()
 
     delta = p.diff()
-    gain = delta.where(delta > 0, 0).ewm(alpha=1/14, adjust=False).mean()
-    loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
-    rsi = 100 - (100 / (1 + gain / (loss + 1e-10)))
+    gain = delta.where(delta > 0, 0.0).ewm(alpha=1/14, adjust=False).mean()
+    loss = (-delta.where(delta < 0, 0.0)).ewm(alpha=1/14, adjust=False).mean()
+    rsi_val = 100 - (100 / (1 + gain / (loss + 1e-10)))
 
-    tr = pd.concat([
-        h - l,
-        (h - p.shift()).abs(),
-        (l - p.shift()).abs()
-    ], axis=1).max(axis=1)
+    ma20     = p.rolling(20).mean()
+    std20    = p.rolling(20).std()
+    lower_bb = ma20 - (MRA_BB_STD * std20)
+    ibs      = (p - l) / (h - l + 1e-10)
+    ma5      = p.rolling(5).mean()
+
+    if is_hyper:
+        change = np.sign(delta).fillna(0)
+        streak = change.groupby((change != change.shift()).cumsum()).cumsum()
+        s_delta = streak.diff().fillna(0)
+        s_gain = s_delta.where(s_delta > 0, 0.0).rolling(2).mean()
+        s_loss = (-s_delta.where(s_delta < 0, 0.0)).rolling(2).mean()
+        streak_rsi = 100 - (100 / (1 + s_gain / (s_loss + 1e-10))).fillna(50)
+
+        rsi3_gain = delta.where(delta > 0, 0.0).ewm(alpha=1/3, adjust=False).mean()
+        rsi3_loss = (-delta.where(delta < 0, 0.0)).ewm(alpha=1/3, adjust=False).mean()
+        rsi3 = 100 - (100 / (1 + rsi3_gain / (rsi3_loss + 1e-10)))
+
+        p_rank = delta.rolling(100).apply(
+            lambda x: (x[:-1] < x[-1]).sum() / 99.0 * 100 if len(x) > 0 else 50,
+            raw=True
+        )
+        rsi_val = (rsi3 + streak_rsi + p_rank) / 3
+
+    tr = pd.concat([h - l, (h - p.shift()).abs(), (l - p.shift()).abs()], axis=1).max(axis=1)
     atr = tr.ewm(alpha=1/14, adjust=False).mean()
+    up   = h.diff().clip(lower=0)
+    down = (-l.diff()).clip(lower=0)
+    plus_di  = 100 * (up.where((up > down) & (up > 0), 0.0).ewm(alpha=1/14, adjust=False).mean() / (atr + 1e-10))
+    minus_di = 100 * (down.where((down > up) & (down > 0), 0.0).ewm(alpha=1/14, adjust=False).mean() / (atr + 1e-10))
+    adx = (100 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-10)).ewm(alpha=1/14, adjust=False).mean()
 
-    up = h.diff().clip(lower=0)
-    dn = (-l.diff()).clip(lower=0)
-    plus_di = 100 * (up.ewm(alpha=1/14, adjust=False).mean() / (atr + 1e-10))
-    minus_di = 100 * (dn.ewm(alpha=1/14, adjust=False).mean() / (atr + 1e-10))
-    dx = (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-10)
-    adx = dx.ewm(alpha=1/14, adjust=False).mean() * 100
+    return p, f_line, s_line, ema200, vol_ma, rsi_val, atr, adx, v, ibs, lower_bb, ma5
 
-    return {
-        "p": p, "h": h, "l": l, "v": v,
-        "ema20": ema20, "ema50": ema50, "ema200": ema200,
-        "ma10": ma10, "ma20": ma20, "vol_ma20": vol_ma20,
-        "lower_bb": lower_bb,
-        "ibs": ibs, "rsi": rsi, "atr": atr, "adx": adx
-    }
+# ---------------------------------------------------------------------------
+# CORE ENGINE
+# ---------------------------------------------------------------------------
+def voer_lijst_uit(bestandsnaam: str, label: str, naam_sector: str) -> None:
+    if not os.path.exists(bestandsnaam):
+        logger.warning(f"Bestand niet gevonden: {bestandsnaam}")
+        return
 
-# -------------------------------------------------------------------------
-# STRATEGIEËN
-# -------------------------------------------------------------------------
-# (strategieën blijven identiek — ingekort voor leesbaarheid)
-# Jij hebt deze al, ze blijven 100% hetzelfde.
-# -------------------------------------------------------------------------
+    with open(bestandsnaam, 'r') as f:
+        content = f.read().replace('\n', ',').replace('$', '')
+        tickers = sorted(list(set([t.strip().upper() for t in content.split(',') if t.strip()])))
 
-# -------------------------------------------------------------------------
-# RUN STRATEGIES PER TICKER
-# -------------------------------------------------------------------------
-# (blijft identiek — ingekort)
-# -------------------------------------------------------------------------
+    if not tickers:
+        logger.warning(f"Geen tickers in bestand: {bestandsnaam}")
+        return
 
-# -------------------------------------------------------------------------
-# RAPPORTAGE
-# -------------------------------------------------------------------------
-def rapport(label, naam, nu, res, trades, sig):
-    def fmt(n): return f"€{100000 + n:,.0f}"
-    def block(lst): return "\n".join(lst) if lst else "Geen signalen"
+    nu = datetime.now().strftime("%d/%m/%Y %H:%M")
+    logger.info(f"Start analyse voor {naam_sector} ({label}) met {len(tickers)} tickers.")
 
-    lijnen = [
-        f"📊 {label} {naam} — GLOBAL v2.0",
-        f"{nu}",
-        "----------------------------------",
-        f"🐢 Traag (50/200): {fmt(res['T'])} ({trades['T']} trades)",
-        f"⚡ Snel (20/50): {fmt(res['S'])} ({trades['S']} trades)",
-        f"🚀 Hyper Trend: {fmt(res['HT'])} ({trades['HT']} trades)",
-        f"🔥 Hyper Scalp: {fmt(res['HS'])} ({trades['HS']} trades)",
-        f"🛡️ MRA Snel: {fmt(res['MRAS'])} ({trades['MRAS']} trades)",
-        f"🐢 MRA Traag: {fmt(res['MRAT'])} ({trades['MRAT']} trades)",
-        "",
-        "🛡️ SIGNALEN MRA Snel:",
-        block(sig["MRAS"]),
-        "",
-        "🐢 SIGNALEN MRA Traag:",
-        block(sig["MRAT"]),
-        "",
-        "🐢 SIGNALEN Traag:",
-        block(sig["T"]),
-        "",
-        "⚡ SIGNALEN Snel:",
-        block(sig["S"]),
-        "",
-        "🚀 SIGNALEN Hyper Trend:",
-        block(sig["HT"]),
-        "",
-        "🔥 SIGNALEN Hyper Scalp:",
-        block(sig["HS"]),
+    try:
+        raw_df = yf.download(tickers, period="5y", progress=False, auto_adjust=True)
+    except Exception as e:
+        logger.error(f"Download fout: {e}")
+        return
+
+    inzet = 2500.0
+    res        = {"T": 0.0, "S": 0.0, "HT": 0.0, "HS": 0.0, "MRAS": 0.0, "MRAT": 0.0}
+    num_trades = {"T": 0,   "S": 0,   "HT": 0,   "HS": 0,   "MRAS": 0,   "MRAT": 0}
+    sig        = {"T": [],  "S": [],  "HT": [], "HS": [],  "MRAS": [],  "MRAT": []}
+
+    STRATS = [
+        ("T",  50,  200, True,  False),
+        ("S",  20,   50, True,  False),
+        ("HT",  9,   21, True,  True),
+        ("HS",  9,   21, False, True),
     ]
 
-    telegram_send("\n".join(lijnen))
+    for ticker in tickers:
+        try:
+            if len(tickers) > 1:
+                t_data = raw_df.xs(ticker, axis=1, level=1).dropna(how='all')
+            else:
+                t_data = raw_df.dropna(how='all')
 
-# -------------------------------------------------------------------------
-# MAIN — **AANGEPAST MET AUTO-FILE-DETECTIE**
-# -------------------------------------------------------------------------
+            if len(t_data) < 250:
+                continue
+
+            p, f, sl, e200, v_ma, rsi, atr, adx, vol, ibs, l_bb, ma5 = bereken_indicatoren_vectorized(
+                t_data, 50, 200, True, False
+            )
+            kosten = 15.0 + (inzet * 0.0035)
+
+            for skey, s_p, t_p, utr, ihyp in STRATS:
+                pi, fi, sli, ei, vmai, rsii, atri, dxi, voli, _, _, _ = bereken_indicatoren_vectorized(
+                    t_data, s_p, t_p, utr, ihyp
+                )
+
+                pb  = pi.iloc[200:]
+                fb  = fi.iloc[200:]
+                sb  = sli.iloc[200:]
+                eb  = ei.iloc[200:]
+                vb  = voli.iloc[200:]
+                vmb = vmai.iloc[200:]
+                ab  = atri.iloc[200:]
+                dxb = dxi.iloc[200:]
+
+                pr, pos, ins, hi = 0.0, False, 0.0, 0.0
+                for i in range(1, len(pb)):
+                    cp = pb.iloc[i]
+                    if not pos:
+                        if (
+                            fb.iloc[i] > sb.iloc[i]
+                            and fb.iloc[i-1] <= sb.iloc[i-1]
+                            and dxb.iloc[i] > 15
+                            and vb.iloc[i] > (vmb.iloc[i] * 0.6)
+                            and ((not utr) or cp > eb.iloc[i])
+                        ):
+                            ins, hi, pos = cp, cp, True
+                            pr -= kosten
+                            num_trades[skey] += 1
+                    else:
+                        hi = max(hi, cp)
+                        if cp < (hi - 2 * ab.iloc[i]) or fb.iloc[i] < sb.iloc[i]:
+                            pr += (inzet * (cp / ins) - inzet) - kosten
+                            pos = False
+
+                if pos:
+                    pr += (inzet * (pb.iloc[-1] / ins) - inzet) - kosten
+                res[skey] += pr
+
+                cp    = pi.iloc[-1]
+                catr  = atri.iloc[-1]
+                crsi  = rsii.iloc[-1]
+                y_l   = f"[Grafiek](https://finance.yahoo.com/quote/{ticker})"
+                l_rsi = "💎 CRSI" if ihyp else "📊 RSI"
+
+                if (
+                    fi.iloc[-1] > sli.iloc[-1]
+                    and fi.iloc[-2] <= sli.iloc[-2]
+                    and dxi.iloc[-1] > 15
+                    and voli.iloc[-1] > (vmai.iloc[-1] * 0.6)
+                    and ((not utr) or cp > ei.iloc[-1])
+                ):
+                    sig[skey].append(
+                        f"• `{ticker}`: 🟢 *KOOP* | €{cp:.2f} | ⚡ ATR: {catr:.2f} | {l_rsi}: {crsi:.1f} | "
+                        f"🛡️ SL: €{cp-(2*catr):.2f} | {y_l}"
+                    )
+                elif fi.iloc[-1] < sli.iloc[-1] and fi.iloc[-2] >= sli.iloc[-2]:
+                    sig[skey].append(
+                        f"• `{ticker}`: 🔴 *VERKOOP* | €{cp:.2f} | ⚡ ATR: {catr:.2f} | {l_rsi}: {crsi:.1f} | "
+                        f"🛡️ SL: €{cp-(2*catr):.2f} | {y_l}"
+                    )
+
+            # MRA SNEL
+            pb_mra  = p.iloc[-252:].reset_index(drop=True)
+            lbb_mra = l_bb.iloc[-252:].reset_index(drop=True)
+            ibs_mra = ibs.iloc[-252:].reset_index(drop=True)
+            m5_mra  = ma5.iloc[-252:].reset_index(drop=True)
+
+            pr_ms, pos_ms, ins_ms = 0.0, False, 0.0
+            for i in range(1, len(pb_mra)):
+                cp    = pb_mra.iloc[i]
+                lbb_i = lbb_mra.iloc[i]
+                ibs_i = ibs_mra.iloc[i]
+                if pd.isna(cp) or pd.isna(lbb_i) or pd.isna(ibs_i):
+                    continue
+                if not pos_ms:
+                    if cp < lbb_i and ibs_i < MRA_IBS_MAX:
+                        ins_ms, pos_ms = cp, True
+                        pr_ms -= kosten
+                        num_trades["MRAS"] += 1
+                else:
+                    m5_i = m5_mra.iloc[i]
+                    if pd.isna(m5_i):
+                        continue
+                    if cp > m5_i or cp > (ins_ms * MRA_SNEL_WINST):
+                        pr_ms += (inzet * (cp / ins_ms) - inzet) - kosten
+                        pos_ms = False
+            if pos_ms:
+                pr_ms += (inzet * (pb_mra.iloc[-1] / ins_ms) - inzet) - kosten
+            res["MRAS"] += pr_ms
+
+            # MRA TRAAG
+            ma10_mra = p.rolling(MRA_TRAAG_MA).mean().iloc[-252:].reset_index(drop=True)
+
+            pr_mt, pos_mt, ins_mt, hold_mt = 0.0, False, 0.0, 0
+            for i in range(1, len(pb_mra)):
+                cp    = pb_mra.iloc[i]
+                lbb_i = lbb_mra.iloc[i]
+                ibs_i = ibs_mra.iloc[i]
+                if pd.isna(cp) or pd.isna(lbb_i) or pd.isna(ibs_i):
+                    continue
+                if not pos_mt:
+                    if cp < lbb_i and ibs_i < MRA_IBS_MAX:
+                        ins_mt, pos_mt, hold_mt = cp, True, 0
+                        pr_mt -= kosten
+                        num_trades["MRAT"] += 1
+                else:
+                    hold_mt += 1
+                    ma10_i = ma10_mra.iloc[i]
+                    if pd.isna(ma10_i):
+                        continue
+                    if hold_mt >= MRA_TRAAG_HOLD:
+                        if cp > ma10_i or cp > (ins_mt * MRA_TRAAG_WINST):
+                            pr_mt += (inzet * (cp / ins_mt) - inzet) - kosten
+                            pos_mt = False
+            if pos_mt:
+                pr_mt += (inzet * (pb_mra.iloc[-1] / ins_mt) - inzet) - kosten
+            res["MRAT"] += pr_mt
+
+            # ACTUELE MRA SIGNALEN
+            cp_now  = p.iloc[-1]
+            lbb_now = l_bb.iloc[-1]
+            ibs_now = ibs.iloc[-1]
+            if not pd.isna(cp_now) and not pd.isna(lbb_now) and not pd.isna(ibs_now):
+                if cp_now < lbb_now and ibs_now < MRA_IBS_MAX:
+                    y_l = f"[Grafiek](https://finance.yahoo.com/quote/{ticker})"
+                    sig["MRAS"].append(
+                        f"• `{ticker}`: 🛡️ *Munger Snel* | €{cp_now:.2f} | 📊 RSI: {rsi.iloc[-1]:.1f} | {y_l}"
+                    )
+                    sig["MRAT"].append(
+                        f"• `{ticker}`: 🐢 *Munger Traag* | €{cp_now:.2f} | 📊 RSI: {rsi.iloc[-1]:.1f} | {y_l}"
+                    )
+
+        except Exception as e:
+            logger.error(f"Fout bij ticker {ticker}: {e}")
+            continue
+
+    # -----------------------------------------------------------------------
+    # RAPPORT (EXACTE STRUCTUUR 00ULT)
+    # -----------------------------------------------------------------------
+    def fmt(n): return f"€{100000 + n:,.0f}"
+    def get_s(lst): return "\n".join(lst) if lst else "Geen actie"
+
+    deel1 = [
+        f"📊 *{label} {naam_sector} RAPPORT triplex*",
+        f"_{nu}_",
+        "----------------------------------",
+        f"🐢 *Traag (50/200):* {fmt(res['T'])} ({num_trades['T']} trades)",
+        f"⚡ *Snel (20/50):* {fmt(res['S'])} ({num_trades['S']} trades)",
+        f"🚀 *Hyper Trend:* {fmt(res['HT'])} ({num_trades['HT']} trades)",
+        f"🔥 *Hyper Scalp:* {fmt(res['HS'])} ({num_trades['HS']} trades)",
+        f"🛡️ *MRA Snel:* {fmt(res['MRAS'])} ({num_trades['MRAS']} trades)",
+        f"🐢 *MRA Traag:* {fmt(res['MRAT'])} ({num_trades['MRAT']} trades)",
+        "",
+        "🛡️ *SIGNALEN TRAAG (RSI):*",
+        get_s(sig["T"]),
+        "",
+        "🎯 *SIGNALEN SNEL (RSI):*",
+        get_s(sig["S"]),
+    ]
+
+    deel2 = [
+        f"📊 *{label} {naam_sector} (2/2)*",
+        "",
+        "📈 *SIGNALEN HYPER TREND (CRSI):*",
+        get_s(sig["HT"]),
+        "",
+        "⚡ *SIGNALEN HYPER SCALP (CRSI):*",
+        get_s(sig["HS"]),
+        "",
+        "🛡️ *SIGNALEN MRA SNEL:*",
+        get_s(sig["MRAS"]),
+        "",
+        "🐢 *SIGNALEN MRA TRAAG:*",
+        get_s(sig["MRAT"]),
+        "",
+        "⚙️ *PARAMETERS:*",
+        f"_Trend: ADX>15 | Vol>0.6x MA20 | EMA200 filter | Trailing stop 2x ATR_",
+        f"_MRA instap: BB {MRA_BB_STD}σ | IBS<{MRA_IBS_MAX} (geen extra filters)_",
+        f"_MRA Snel: uitstap MA{MRA_SNEL_MA} of +{int((MRA_SNEL_WINST-1)*100)}%_",
+        f"_MRA Traag: min {MRA_TRAAG_HOLD}d, uitstap MA{MRA_TRAAG_MA} of +{int((MRA_TRAAG_WINST-1)*100)}%_",
+        f"_Inzet: €{inzet:.0f} | Kosten: €{kosten:.2f}/trade_",
+    ]
+
+    stuur_telegram("\n".join(deel1))
+    time.sleep(1)
+    stuur_telegram("\n".join(deel2))
+
+# ---------------------------------------------------------------------------
+# MAIN
+# ---------------------------------------------------------------------------
 def main():
     sectoren = {
         "041": "Benelux",
@@ -276,23 +371,23 @@ def main():
         "060": "Overig 12",
     }
 
-    # Zoek ALLE tickerbestanden in de volledige repo
+    # Zoek alle tickerbestanden in de volledige repo (ook submappen)
     alle_bestanden = []
-    for root, dirs, files in os.walk("."):
+    for root, _, files in os.walk("."):
         for f in files:
             if f.startswith("tickers_") and f.endswith("x.txt"):
                 alle_bestanden.append(os.path.join(root, f))
 
     if not alle_bestanden:
         logger.error("❌ Geen tickerbestanden gevonden in de repository!")
+        print("Geen tickers gevonden.")
         return
 
-    # Verwerk 041 t/m 060
+    # Loop voor 041 t/m 060 en koppel aan juiste file
     for i in range(41, 61):
         nr = f"0{i}"
         naam = sectoren.get(nr, f"Lijst {nr}")
-
-        match = [p for p in alle_bestanden if f"tickers_{nr}x.txt" in p]
+        match = [p for p in alle_bestanden if f"tickers_{nr}x.txt" in os.path.basename(p)]
 
         if not match:
             logger.warning(f"⚠ Geen bestand gevonden voor {nr} ({naam})")
@@ -300,35 +395,7 @@ def main():
 
         bestandsnaam = match[0]
         logger.info(f"📁 Bestand gevonden: {bestandsnaam}")
-
-        # Lijst uitvoeren
-        with open(bestandsnaam, "r") as f:
-            raw = f.read().replace("\n", ",").replace("$", "")
-            tickers = sorted(set(t.strip().upper() for t in raw.split(",") if t.strip()))
-
-        if not tickers:
-            continue
-
-        nu = datetime.now().strftime("%d/%m/%Y %H:%M")
-
-        res = {k: 0.0 for k in ["T","S","HT","HS","MRAS","MRAT"]}
-        trades = {k: 0 for k in res.keys()}
-        sig = {k: [] for k in res.keys()}
-
-        for t in tickers:
-            df = download_ticker(t)
-            if df is None:
-                continue
-
-            r, tr, sg = run_strategies(df, t)
-            for k in res.keys():
-                res[k] += r[k]
-                trades[k] += tr[k]
-                sig[k].extend(sg[k])
-
-            time.sleep(0.2)
-
-        rapport(nr, naam, nu, res, trades, sig)
+        voer_lijst_uit(bestandsnaam, nr, naam)
         time.sleep(2)
 
 if __name__ == "__main__":
