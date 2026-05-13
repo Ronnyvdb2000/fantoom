@@ -32,7 +32,7 @@ import pandas as pd
 import yfinance as yf
 import requests
 
-Dempt de pandas FutureWarning voor groupby zonder de logica te breken
+# Dempt de pandas FutureWarning voor groupby zonder de logica te breken
 
 warnings.filterwarnings(
 "ignore",
