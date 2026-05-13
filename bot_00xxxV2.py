@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
--- coding: utf-8 --
+# -- coding: utf-8 --
 
 """
 bot_00xxxV2.py  —  GLOBAL ENGINE v2.4
